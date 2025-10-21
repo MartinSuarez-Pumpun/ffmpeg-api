@@ -24,271 +24,134 @@ FFMPEG API is provided as Docker image for easy consumption.
 ** Query param: `compress=zip|gzip` - Returns extracted images as _zip_ or _tar.gz_ (gzip).
 ** Query param: `fps=2` - Extract images using specified FPS. 
 * `GET /video/extract/download/:filename` - Downloads extracted image file and deletes it from server.
-** Query param: `delete=no` - does not delete file.
-* `POST /probe` - Probe media file, return JSON metadata.
+# ffmpeg-api
 
-== Docker image
+A small HTTP service that makes ffmpeg available over a simple REST API. It
+lets you upload media files (audio, video, images), run conversions or
+extractions, and download the results. The project is provided as source
+and as a Docker image so you can run it locally or in a container platform.
 
-=== Build your own
+Quick links
 
-* Clone this repository.
-* Build Docker image:
-** `docker build -t ffmpeg-api .`
-* Run image in foreground:
-** `docker run -it --rm --name ffmpeg-api -p 3000:3000 ffmpeg-api`
-* Run image in background:
-** `docker run -d --name ffmpeg-api -p 3000:3000 ffmpeg-api`
+- Docs (this file)
+- API index: `/endpoints`
+- Service landing page (human-friendly): `/`
 
-=== Use existing
+Why use this
 
-* Run image in foreground:
-** `docker run -it --rm --name ffmpeg-api -p 3000:3000 kazhar/ffmpeg-api`
-* Run image in background:
-** `docker run -d --name ffmpeg-api -p 3000:3000 kazhar/ffmpeg-api`
+- Simple, scriptable HTTP API for ffmpeg conversions.
+- Lets you provide custom ffmpeg parameters when you need precise control.
+- Designed to be run in Docker for ease of deployment.
 
-=== Environment variables
+Getting started (local)
 
-* Default log level is _info_. Set log level using environment variable, _LOG_LEVEL_.
-** Set log level to debug:
-** `docker run -it --rm -p 3000:3000 -e LOG_LEVEL=debug kazhar/ffmpeg-api`
-* Default maximum file size of uploaded files is 512MB. Use environment variable _FILE_SIZE_LIMIT_BYTES_ to change it:
-** Set max file size to 1MB:
-** `docker run -it --rm -p 3000:3000 -e FILE_SIZE_LIMIT_BYTES=1048576 kazhar/ffmpeg-api`
-* All uploaded and converted files are deleted when they've been downloaded. Use environment variable _KEEP_ALL_FILES_ to keep all files inside the container /tmp-directory:
-** `docker run -it --rm -p 3000:3000 -e KEEP_ALL_FILES=true kazhar/ffmpeg-api`
-* When running on Docker/Kubernetes, port binding can be different than default 3000. Use _EXTERNAL_PORT_ to set up external port in returned URLs in extracted images JSON:
-** `docker run -it --rm -p 3001:3000 -e EXTERNAL_PORT=3001 kazhar/ffmpeg-api`
-
-
-== Usage
-
-Input file to FFMPEG API can be anything that ffmpeg supports. See https://www.ffmpeg.org/general.html#Supported-File-Formats_002c-Codecs-or-Features[ffmpeg docs for supported formats].
-
-=== Convert
-
-Convert audio/video/image files using the API.
-
-You can run the following example curl commands (multipart form uploads):
+1. Build an image locally:
 
 ```bash
-curl -F "file=@input.wav" http://127.0.0.1:3000/convert/audio/to/mp3 > output.mp3
-curl -F "file=@input.m4a" http://127.0.0.1:3000/convert/audio/to/wav > output.wav
-curl -F "file=@input.mov" http://127.0.0.1:3000/convert/video/to/mp4 > output.mp4
-curl -F "file=@input.mp4" http://127.0.0.1:3000/convert/video/to/mp4 > output.mp4
-curl -F "file=@input.tiff" http://127.0.0.1:3000/convert/image/to/jpg > output.jpg
-curl -F "file=@input.png" http://127.0.0.1:3000/convert/image/to/jpg > output.jpg
+docker build -t ffmpeg-api .
 ```
 
-=== Passing custom ffmpeg parameters
-
-You can pass custom ffmpeg parameters to control how ffmpeg processes the uploaded file. There are three supported ways to provide parameters (priority order):
-
-1) JSON body field `params` (preferred when not using multipart uploads). Provide either an array or a string:
-
-	 - Array form (most reliable):
-
-		 {"params": ["-codec:v","libx264","-b:v","1M","-vf","scale=-2:720"]}
-
-	 - String form (will be parsed, keep quoted fragments in quotes):
-
-		 {"params": "-codec:v libx264 -b:v 1M -vf \"scale=-2:720\""}
-
-2) JSON body field `ffmpeg` (fallback for backwards compatibility).
-
-3) Multipart form field named `params` (JSON array string) or `ffmpeg` when uploading files using `-F` curl form uploads. The upload middleware will try to JSON.parse the `params` field and use it if it's a valid array.
-
-If no custom params are provided, the server will use sensible defaults depending on the conversion route.
-
-=== Example: convert a 320kbps 8-minute AAC to 128kbps MP3 (mono)
-
-Assume you have a file `input.aac` (320kbps, 8 minutes). To convert it to a 128kbps mono MP3, the ffmpeg parameters you want are (from ffmpeg docs):
-
-	- Use libmp3lame encoder: `-codec:a libmp3lame`
-	- Set audio bitrate: `-b:a 128k`
-	- Force mono: `-ac 1`
-
-Below are two ways to do the conversion with this API.
-
-1) JSON body (when sending binary file directly in the request body is not possible with curl easily, so this is mainly for programmatic clients that PUT the file bytes and JSON together — but the API supports JSON params this way):
-
-	 Example JSON body (when your client sends the file via multipart or another mechanism and can also send JSON params):
-
-	 {
-		 "params": ["-codec:a","libmp3lame","-b:a","128k","-ac","1"]
-	 }
-
-	 If your client supports sending the file as raw bytes with JSON metadata, ensure the server receives the file bytes in the request body and the JSON is sent appropriately. For typical usage with curl, prefer multipart below.
-
-2) Multipart form upload with curl (recommended):
-
-		 - Array-as-JSON form field (curl):
-
-	```bash
-	curl -F "file=@input.aac" \
-		-F 'params=["-codec:a","libmp3lame","-b:a","128k","-ac","1"]' \
-		http://127.0.0.1:3000/convert/audio/to/mp3 --output output.mp3
-	```
-
-		 - String form (quoted string) form field (curl):
-
-	```bash
-	curl -F "file=@input.aac" \
-		-F 'params=-codec:a libmp3lame -b:a 128k -ac 1' \
-		http://127.0.0.1:3000/convert/audio/to/mp3 --output output.mp3
-	```
-
-Notes:
-- Using the JSON array form for `params` is the safest because it avoids shell parsing issues.
-- If a param is not supported by the server's ffmpeg (for example, missing codec), ffmpeg will fail and the API returns an error.
-- Consider implementing a server-side whitelist/validation if exposing this API to untrusted clients.
-
-=== Extract images
-
-Extract images from video using the API.
+2. Run it on port 3000:
 
 ```bash
-    curl -F "file=@input.mov" http://127.0.0.1:3000/video/extract/images
+docker run --rm -p 3000:3000 ffmpeg-api
 ```
 
-Returns JSON that lists image download URLs for each extracted image. Default FPS is 1 and images are PNG.
-
-```bash
-    curl http://127.0.0.1:3000/video/extract/download/ba0f565c-0001.png --output ba0f565c-0001.png
-```
-
-Downloads extracted image and deletes it from server. To keep the file, use ?delete=no:
-
-```bash
-    curl http://127.0.0.1:3000/video/extract/download/ba0f565c-0001.png?delete=no --output ba0f565c-0001.png
-```
-
-```bash
-    curl -F "file=@input.mov" "http://127.0.0.1:3000/video/extract/images?compress=zip" > images.zip
-```
-
-Returns ZIP package of all extracted images.
-
-```bash
-    curl -F "file=@input.mov" "http://127.0.0.1:3000/video/extract/images?compress=gzip" > images.tar.gz
-```
-
-Returns GZIP (tar.gz) package of all extracted images.
-
-```bash
-    curl -F "file=@input.mov" "http://127.0.0.1:3000/video/extract/images?fps=0.5"
-```
-
-Sets FPS to extract images. FPS=0.5 is every two seconds, FPS=4 is four images per second, etc.
-
-=== Extract audio
-
-Extract audio track from video using the API.
-
-```bash
-    curl -F "file=@input.mov" http://127.0.0.1:3000/video/extract/audio --output extracted.wav
-```
-
-Returns 1-channel WAV-file of video's audio track by default.
-
-```bash
-curl -F "file=@input.mov" "http://127.0.0.1:3000/video/extract/audio?mono=no" --output extracted_all_channels.wav
-```
-
-Returns WAV-file of video's audio track with all the channels as in input video.
-
-=== Probe
-
-Probe audio/video/image files using the API.
-
-```bash
-curl -F "file=@input.mov" http://127.0.0.1:3000/probe
-```
-
-Returns JSON metadata of media file. The same JSON metadata as in ffprobe command:
-`ffprobe -of json -show_streams -show_format input.mov`.
-
-See sample of MOV-video metadata: link:./samples/probe_metadata.json[probe_metadata.json].
-
-=== Curl examples
-
-Below are copy-pasteable curl examples for common workflows. These assume the server runs on localhost:3000. Adjust host/port as needed.
-
-Convert audio (simple multipart):
+3. Try a quick conversion (example):
 
 ```bash
 curl -F "file=@input.wav" http://127.0.0.1:3000/convert/audio/to/mp3 --output output.mp3
 ```
 
-Convert audio with custom params (multipart, JSON array in params field):
+Common endpoints
+
+- GET / — human-friendly index (this README condensed)
+- GET /endpoints — machine-readable list of registered routes
+- POST /convert/audio/to/mp3
+- POST /convert/audio/to/wav
+- POST /convert/video/to/mp4
+- POST /convert/image/to/jpg
+- POST /video/extract/audio
+- POST /video/extract/images
+- GET /video/extract/download/:filename
+- POST /probe
+
+How to upload files
+
+Preferred: multipart/form-data with field name `file` for the media payload.
+
+Passing custom ffmpeg parameters
+
+Preferred: send `params` as a JSON array in the request body (application/json)
+or as a multipart form field named `params` containing a JSON array string.
+
+Examples:
+
+- JSON params (programmatic client):
+
+```json
+{"params":["-codec:a","libmp3lame","-b:a","128k","-ac","1"]}
+```
+
+- multipart curl (params as JSON array string):
 
 ```bash
 curl -F "file=@input.aac" \
-	-F 'params=["-codec:a","libmp3lame","-b:a","128k","-ac","1"]' \
-	http://127.0.0.1:3000/convert/audio/to/mp3 --output output.mp3
+  -F 'params=["-codec:a","libmp3lame","-b:a","128k","-ac","1"]' \
+  http://127.0.0.1:3000/convert/audio/to/mp3 --output output.mp3
 ```
 
-Convert video to mp4 (multipart):
+Or pass `ffmpeg` as a single string (legacy):
 
 ```bash
-curl -F "file=@input.mov" http://127.0.0.1:3000/convert/video/to/mp4 --output output.mp4
+curl -F "file=@input.aac" -F 'ffmpeg=-codec:a libmp3lame -b:a 128k -ac 1' http://127.0.0.1:3000/convert/audio/to/mp3 --output output.mp3
 ```
 
-Convert using JSON body params (programmatic clients):
+Notes on parameters
+
+- The server prefers `params` (array) > `ffmpeg` (string) > query `ffmpeg`.
+- When you supply custom params the server will use them as-is and will not
+  apply default presets. Be careful to include required options (codec/format).
+
+Docker & environment variables
+
+- LOG_LEVEL — set log verbosity (default: info)
+- FILE_SIZE_LIMIT_BYTES — max upload size in bytes (default configured in
+  `src/constants.js`)
+- KEEP_ALL_FILES — set to `true` to keep processed files under `/tmp` for
+  debugging (default: false)
+- EXTERNAL_PORT — when running in Docker, set this if ports are remapped so
+  that generated download URLs use the right external port
+
+Example: run with debug logs and a larger file size limit
 
 ```bash
-curl -X POST -H "Content-Type: application/json" -d '{"params":["-codec:a","libmp3lame","-b:a","128k","-ac","1"]}' http://127.0.0.1:3000/convert/audio/to/mp3
+docker run --rm -p 3000:3000 -e LOG_LEVEL=debug -e FILE_SIZE_LIMIT_BYTES=1073741824 ffmpeg-api
 ```
 
-Extract audio from video (default mono WAV):
+Production considerations
 
-```bash
-curl -F "file=@input.mov" http://127.0.0.1:3000/video/extract/audio --output extracted.wav
-```
+- Add authentication and rate limiting before exposing the service publicly.
+- Consider a job queue (Redis + worker) if you expect multiple large, long
+  running conversions — the current server spawns ffmpeg processes directly.
+- Monitor CPU, memory, and disk I/O. ffmpeg jobs can be CPU- and I/O-heavy.
 
-Extract audio all channels:
+Troubleshooting
 
-```bash
-curl -F "file=@input.mov" http://127.0.0.1:3000/video/extract/audio?mono=no --output extracted_all_channels.wav
-```
+- Missing codecs: if ffmpeg reports a missing encoder (for example `libfdk_aac`)
+  you’ll need an ffmpeg build that includes that codec or use a different
+  encoder available in the runtime image.
+- Large uploads failing: increase `FILE_SIZE_LIMIT_BYTES` or check Docker
+  resource limits.
 
-Extract images (default 1 fps):
+Contributing
 
-```bash
-curl -F "file=@input.mov" http://127.0.0.1:3000/video/extract/images
-```
+PRs welcome. If you want help adding a worker queue, rate-limiting, or
+authentication, open an issue describing how you'd like it to work and I can
+help scaffold it.
 
-Extract images with fps=2 and zip compression:
+License & credits
 
-```bash
-curl -F "file=@input.mov" http://127.0.0.1:3000/video/extract/images?fps=2&compress=zip > images.zip
-```
-
-Download an extracted image (returned filenames are in the JSON response):
-
-```bash
-curl http://127.0.0.1:3000/video/extract/download/<filename> --output <filename>
-```
-
-Probe media file (returns ffprobe-style JSON):
-
-```bash
-curl -F "file=@input.mov" http://127.0.0.1:3000/probe
-```
-
-List endpoints:
-```bash
-    curl http://127.0.0.1:3000/endpoints
-```
-
-Notes:
-- Use the `params` JSON array when possible to avoid quoting/escaping issues.
-- When uploading via multipart, `params` should be a JSON array string. The server will try to parse it and use it directly.
-- If you upload with `file=@...` and do not include an original filename, the server will fall back to a generated temp-name for the output filename.
-- Adjust host/port if you use Docker or a different bind (see `EXTERNAL_PORT` in environment variables).
-
-
-== Background
-
-Originally developed by https://github.com/surebert[Paul Visco].                  
-
-Changes include new functionality, updated Node.js version, Docker image based on Alpine, logging and other major refactoring.
+This project was inspired by existing ffmpeg service projects and uses
+`fluent-ffmpeg` for the Node bindings. See the repository history for exact
+references.
