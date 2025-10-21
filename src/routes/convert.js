@@ -1,5 +1,6 @@
 var express = require('express')
 const ffmpeg = require('fluent-ffmpeg');
+const path = require('path');
 
 const constants = require('../constants.js');
 const logger = require('../utils/logger.js')
@@ -44,45 +45,124 @@ function convert(req,res,next) {
     let conversion = res.locals.conversion;
     logger.debug(`path: ${req.path}, conversion: ${conversion}, format: ${format}`);
 
-    let ffmpegParams ={
-        extension: format
-    };
-    if (conversion == "image")
-    {
-        ffmpegParams.outputOptions= ['-pix_fmt yuv422p'];
-    }
-    if (conversion == "audio")
-    {
-        if (format === "mp3")
-        {
-            ffmpegParams.outputOptions=['-codec:a libmp3lame' ];
+        // helper: parse ffmpeg args string into array, preserving quoted sections
+        function parseFFmpegArgs(argString) {
+            if (!argString) return null;
+            // simple parser: split by space but keep quoted substrings
+            const args = [];
+            let current = '';
+            let inQuotes = false;
+            let quoteChar = null;
+            for (let i = 0; i < argString.length; i++) {
+                const ch = argString[i];
+                if ((ch === '"' || ch === "'") && !inQuotes) {
+                    inQuotes = true;
+                    quoteChar = ch;
+                    continue;
+                }
+                if (ch === quoteChar && inQuotes) {
+                    inQuotes = false;
+                    quoteChar = null;
+                    continue;
+                }
+                if (ch === ' ' && !inQuotes) {
+                    if (current.length > 0) {
+                        args.push(current);
+                        current = '';
+                    }
+                    continue;
+                }
+                current += ch;
+            }
+            if (current.length > 0) args.push(current);
+            return args;
         }
-        if (format === "wav")
-        {
-            ffmpegParams.outputOptions=['-codec:a pcm_s16le' ];
+
+        let ffmpegParams ={
+            extension: format
+        };
+
+        // Prefer params from request body (req.body.params) which should be an array.
+        // Fallback order:
+        // 1) req.body.params (array or string)
+        // 2) req.body.ffmpeg (array or string)
+        // 3) res.locals.paramsParsed (set by multipart upload)
+        // 4) res.locals.paramsRaw
+        // 5) req.query.ffmpeg or res.locals.ffmpegArgsRaw
+        let parsedArgs = null;
+        if (req.body && req.body.params) {
+            if (Array.isArray(req.body.params)) {
+                parsedArgs = req.body.params;
+            } else if (typeof req.body.params === 'string') {
+                parsedArgs = parseFFmpegArgs(req.body.params);
+            }
         }
-    }
-    if (conversion == "video")
-    {
-        ffmpegParams.outputOptions=[
-            '-codec:v libx264',
-            '-profile:v high',
-            '-r 15',
-            '-crf 23',
-            '-preset ultrafast',
-            '-b:v 500k',
-            '-maxrate 500k',
-            '-bufsize 1000k',
-            '-vf scale=-2:640',
-            '-threads 8',
-            '-codec:a libfdk_aac',
-            '-b:a 128k',
-        ];
+
+        if (!parsedArgs && req.body && req.body.ffmpeg) {
+            if (Array.isArray(req.body.ffmpeg)) {
+                parsedArgs = req.body.ffmpeg;
+            } else if (typeof req.body.ffmpeg === 'string') {
+                parsedArgs = parseFFmpegArgs(req.body.ffmpeg);
+            }
+        }
+
+        if (!parsedArgs && res.locals && res.locals.paramsParsed) {
+            parsedArgs = res.locals.paramsParsed;
+        }
+        if (!parsedArgs && res.locals && res.locals.paramsRaw) {
+            parsedArgs = parseFFmpegArgs(res.locals.paramsRaw);
+        }
+        if (!parsedArgs) {
+            const ffmpegArgsRaw = req.query.ffmpeg || res.locals.ffmpegArgsRaw;
+            parsedArgs = parseFFmpegArgs(ffmpegArgsRaw);
+        }
+        if (parsedArgs && parsedArgs.length > 0) {
+            logger.debug(`Using custom ffmpeg args: ${JSON.stringify(parsedArgs)}`);
+            ffmpegParams.outputOptions = parsedArgs;
+        }
+    // only apply defaults if no custom ffmpeg args were provided
+    if (!ffmpegParams.outputOptions) {
+        if (conversion == "image")
+        {
+            ffmpegParams.outputOptions= ['-pix_fmt yuv422p'];
+        }
+        if (conversion == "audio")
+        {
+            if (format === "mp3")
+            {
+                ffmpegParams.outputOptions=['-codec:a libmp3lame' ];
+            }
+            if (format === "wav")
+            {
+                ffmpegParams.outputOptions=['-codec:a pcm_s16le' ];
+            }
+        }
+        if (conversion == "video")
+        {
+            ffmpegParams.outputOptions=[
+                '-codec:v libx264',
+                '-profile:v high',
+                '-r 15',
+                '-crf 23',
+                '-preset ultrafast',
+                '-b:v 500k',
+                '-maxrate 500k',
+                '-bufsize 1000k',
+                '-vf scale=-2:640',
+                '-threads 8',
+                '-codec:a libfdk_aac',
+                '-b:a 128k',
+            ];
+        }
     }
 
     let savedFile = res.locals.savedFile;
-    let outputFile = savedFile + '-output.' + ffmpegParams.extension;
-    logger.debug(`begin conversion from ${savedFile} to ${outputFile}`)
+    // derive output filename from original filename if available
+    const originalName = res.locals.originalFilename || path.basename(savedFile);
+    const baseName = originalName.indexOf('.') > -1 ? originalName.substring(0, originalName.lastIndexOf('.')) : originalName;
+    let outputFileName = `${baseName}.${ffmpegParams.extension}`;
+    let outputFilePath = path.join('/tmp', outputFileName);
+    logger.debug(`begin conversion from ${savedFile} to ${outputFilePath}`)
 
     //ffmpeg processing... converting file...
     let ffmpegConvertCommand = ffmpeg(savedFile);
@@ -97,10 +177,9 @@ function convert(req,res,next) {
             })
             .on('end', function() {
                 utils.deleteFile(savedFile);
-                return utils.downloadFile(outputFile,null,req,res,next);
+                return utils.downloadFile(outputFilePath, outputFileName, req, res, next);
             })
-            .save(outputFile);
-        
+            .save(outputFilePath);
 }
 
 module.exports = router

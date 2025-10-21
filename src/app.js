@@ -22,6 +22,9 @@ process.on('SIGTERM', handle);
 
 app.use(compression());
 
+// parse JSON bodies so clients can POST ffmpeg params as JSON when not using multipart/form-data
+app.use(express.json());
+
 //routes to handle file upload for all POST methods
 var upload = require('./routes/uploadfile.js');
 app.use(upload);

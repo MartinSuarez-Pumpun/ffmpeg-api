@@ -14,14 +14,23 @@ router.use(function (req, res,next) {
     {
         logger.debug(`${__filename} path: ${req.path}`);
 
+        // Only parse multipart/form-data uploads. If body is JSON (application/json)
+        // we should not try to parse it here so route handlers can read req.body.ffmpeg.
+        const contentType = req.headers['content-type'] || '';
+        if (!contentType.startsWith('multipart/form-data')) {
+            logger.debug('Not a multipart upload, skipping busboy and passing to next middleware');
+            return next();
+        }
+
         let bytes = 0;
         let hitLimit = false;
         let fileName = '';
         var savedFile = uniqueFilename('/tmp/');
+        // allow one non-file field named 'ffmpeg' to pass custom ffmpeg args
         let busboy = new Busboy({
             headers: req.headers,
             limits: {
-                fields: 0, //no non-files allowed
+                fields: 1, // allow one non-file field (ffmpeg)
                 files: 1,
                 fileSize: fileSizeLimit,
         }});
@@ -29,11 +38,40 @@ router.use(function (req, res,next) {
             logger.error(`upload file size limit hit. max file size ${fileSizeLimit} bytes.`)
         });
         busboy.on('fieldsLimit', function() {
-            let msg="Non-file field detected. Only files can be POSTed.";
+            let msg="Too many non-file fields detected. Only one optional 'ffmpeg' field is allowed.";
             logger.error(msg);
             let err = new Error(msg);
             err.statusCode = 400;
             next(err);
+        });
+
+        // capture optional form fields: 'ffmpeg' (string) and 'params' (JSON array preferred)
+        busboy.on('field', function(fieldname, val) {
+            if (fieldname === 'ffmpeg') {
+                logger.debug(`received ffmpeg field: ${val}`);
+                // store raw string for later parsing by routes
+                res.locals.ffmpegArgsRaw = val;
+            } else if (fieldname === 'params') {
+                logger.debug(`received params field: ${val}`);
+                // try to parse JSON array
+                try {
+                    const parsed = JSON.parse(val);
+                    if (Array.isArray(parsed)) {
+                        res.locals.paramsParsed = parsed;
+                        logger.debug('params field parsed as JSON array');
+                    } else {
+                        // keep raw if not an array
+                        res.locals.paramsRaw = val;
+                        logger.debug('params field is JSON but not an array; saved as raw');
+                    }
+                } catch (e) {
+                    // not JSON, save raw string
+                    res.locals.paramsRaw = val;
+                    logger.debug('params field is not valid JSON; saved raw string');
+                }
+            } else {
+                logger.debug(`ignored non-file field: ${fieldname}`);
+            }
         });
 
         busboy.on('file', function(
@@ -66,6 +104,8 @@ router.use(function (req, res,next) {
 
             fileName = filename;
             savedFile = savedFile + "-" + fileName;
+            // store original filename for downstream handlers
+            res.locals.originalFilename = fileName;
             logger.debug(`uploading ${fileName}`)
             let written = file.pipe(fs.createWriteStream(savedFile));
             if (written) {

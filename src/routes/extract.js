@@ -3,6 +3,7 @@ const fs = require('fs');
 const ffmpeg = require('fluent-ffmpeg');
 const uniqueFilename = require('unique-filename');
 var archiver = require('archiver');
+const path = require('path');
 
 const constants = require('../constants.js');
 const logger = require('../utils/logger.js');
@@ -43,23 +44,98 @@ function extract(req,res,next) {
     let compress = req.query.compress || "none";
     let ffmpegParams ={};
     var format = "png";
+
+    // parse optional ffmpeg args from query or uploaded field
+    function parseFFmpegArgs(argString) {
+        if (!argString) return null;
+        const args = [];
+        let current = '';
+        let inQuotes = false;
+        let quoteChar = null;
+        for (let i = 0; i < argString.length; i++) {
+            const ch = argString[i];
+            if ((ch === '"' || ch === "'") && !inQuotes) {
+                inQuotes = true;
+                quoteChar = ch;
+                continue;
+            }
+            if (ch === quoteChar && inQuotes) {
+                inQuotes = false;
+                quoteChar = null;
+                continue;
+            }
+            if (ch === ' ' && !inQuotes) {
+                if (current.length > 0) {
+                    args.push(current);
+                    current = '';
+                }
+                continue;
+            }
+            current += ch;
+        }
+        if (current.length > 0) args.push(current);
+        return args;
+    }
+
+    // Prefer params from request body (req.body.params) which should be an array.
+    // Fallback order: req.body.params, req.body.ffmpeg, res.locals.paramsParsed, res.locals.paramsRaw, query or uploaded ffmpeg
+    let parsedArgs = null;
+    if (req.body && req.body.params) {
+        if (Array.isArray(req.body.params)) {
+            parsedArgs = req.body.params;
+        } else if (typeof req.body.params === 'string') {
+            parsedArgs = parseFFmpegArgs(req.body.params);
+        }
+    }
+
+    if (!parsedArgs && req.body && req.body.ffmpeg) {
+        if (Array.isArray(req.body.ffmpeg)) {
+            parsedArgs = req.body.ffmpeg;
+        } else if (typeof req.body.ffmpeg === 'string') {
+            parsedArgs = parseFFmpegArgs(req.body.ffmpeg);
+        }
+    }
+
+    if (!parsedArgs && res.locals && res.locals.paramsParsed) {
+        parsedArgs = res.locals.paramsParsed;
+    }
+    if (!parsedArgs && res.locals && res.locals.paramsRaw) {
+        parsedArgs = parseFFmpegArgs(res.locals.paramsRaw);
+    }
+    if (!parsedArgs) {
+        const ffmpegArgsRaw = req.query.ffmpeg || res.locals.ffmpegArgsRaw;
+        parsedArgs = parseFFmpegArgs(ffmpegArgsRaw);
+    }
+
     if (extract === "images"){
         format = "png"
-        ffmpegParams.outputOptions=[
-            `-vf fps=${fps}`
-        ];    
+        // if custom args provided, use them; otherwise default to fps
+        if (parsedArgs && parsedArgs.length > 0) {
+            ffmpegParams.outputOptions = parsedArgs;
+        } else {
+            ffmpegParams.outputOptions=[
+                `-vf fps=${fps}`
+            ];    
+        }
     }
     if (extract === "audio"){
         format = "wav"
-        ffmpegParams.outputOptions=[
-            '-vn',
-            `-f ${format}` 
-        ];    
+        if (parsedArgs && parsedArgs.length > 0) {
+            ffmpegParams.outputOptions = parsedArgs;
+        } else {
+            ffmpegParams.outputOptions=[
+                '-vn',
+                `-f ${format}` 
+            ];    
+        }
         let monoAudio = req.query.mono || "yes";
         if (monoAudio === "yes" || monoAudio === "true")
         {
             logger.debug("extracting audio, 1 channel only")
-            ffmpegParams.outputOptions.push('-ac 1')
+            // only add if not already present in custom args
+            if (!ffmpegParams.outputOptions.includes('-ac') && !ffmpegParams.outputOptions.includes('-ac1') ) {
+                ffmpegParams.outputOptions.push('-ac 1')
+            }
         }
         else{
             logger.debug("extracting audio, all channels")
@@ -69,11 +145,13 @@ function extract(req,res,next) {
     ffmpegParams.extension = format;
 
     let savedFile = res.locals.savedFile;
+    const originalName = res.locals.originalFilename || path.basename(savedFile);
+    const baseName = originalName.indexOf('.') > -1 ? originalName.substring(0, originalName.lastIndexOf('.')) : originalName;
 
-    var outputFile = uniqueFilename('/tmp/') ;
-    logger.debug(`outputFile ${outputFile}`);
-    var uniqueFileNamePrefix = outputFile.replace("/tmp/","");
-    logger.debug(`uniqueFileNamePrefix ${uniqueFileNamePrefix}`);
+    // For images, use a timestamped prefix to avoid collisions; for audio use same base name
+    var timestamp = Date.now();
+    var outputPrefix = `${baseName}-${timestamp}`;
+    logger.debug(`outputPrefix ${outputPrefix}`);
 
     //ffmpeg processing...
     var ffmpegCommand = ffmpeg(savedFile);
@@ -89,13 +167,13 @@ function extract(req,res,next) {
 
     //extract audio track from video as wav
     if (extract === "audio"){
-        let wavFile = `${outputFile}.${format}`;
+        let wavFile = path.join('/tmp', `${baseName}.${format}`);
         ffmpegCommand
             .on('end', function() {
                 logger.debug(`ffmpeg process ended`);
 
                 utils.deleteFile(savedFile)
-                return utils.downloadFile(wavFile,null,req,res,next);
+                return utils.downloadFile(wavFile, `${baseName}.${format}`, req,res,next);
             })
           .save(wavFile);
         
@@ -103,6 +181,8 @@ function extract(req,res,next) {
 
     //extract png images from video
     if (extract === "images"){
+        // output files will look like /tmp/<outputPrefix>-%04d.png
+        var outputFile = `/tmp/${outputPrefix}`;
         ffmpegCommand
             .output(`${outputFile}-%04d.png`)
             .on('end', function() {
@@ -111,7 +191,7 @@ function extract(req,res,next) {
                 utils.deleteFile(savedFile)
 
                 //read extracted files
-                var files = fs.readdirSync('/tmp/').filter(fn => fn.startsWith(uniqueFileNamePrefix));
+                var files = fs.readdirSync('/tmp/').filter(fn => fn.startsWith(outputPrefix));
                 
                 if (compress === "zip" || compress === "gzip")
                 {

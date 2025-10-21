@@ -2,6 +2,20 @@
 
 * Added EXTERNAL_PORT env variable.
 
+=== 0.4
+
+* Added support for custom ffmpeg parameters passed by clients.
+** Clients can provide `params` as a JSON array in the request body (preferred),
+   or as a multipart form field named `params` (JSON array string) when uploading files.
+** Backwards-compatible `ffmpeg` query or form field is still supported.
+** Parameters are applied in the following priority: `req.body.params`, `req.body.ffmpeg`,
+   multipart `params`, multipart `ffmpeg`, query `ffmpeg`.
+* Convert and extract routes accept custom ffmpeg args and fall back to sensible defaults when not provided.
+* Output filenames now default to the original input filename (same base, new extension).
+* Extracted images are prefixed with the original base name and a timestamp to avoid collisions.
+* README updated with detailed curl examples and usage for custom ffmpeg parameters.
+
+
 === 0.2
 
 * Added extract images and audio endpoints.
