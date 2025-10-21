@@ -1,28 +1,41 @@
-name: Build and Push Docker image
+name: Build and publish Docker image
 
 on:
   push:
     branches:
-      - main  # or your default branch
-  workflow_dispatch: 
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
         with:
           context: .
+          file: ./Dockerfile
           push: true
-          tags: msuarezpumpun/ffmpeg-api-with-varaibles:latest
-
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ffmpeg-api:latest,${{ secrets.DOCKERHUB_USERNAME }}/ffmpeg-api:${{ github.ref_name }}
