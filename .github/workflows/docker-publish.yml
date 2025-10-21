@@ -37,5 +37,6 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/ffmpeg-api:latest,${{ secrets.DOCKERHUB_USERNAME }}/ffmpeg-api:${{ github.ref_name }}
